@@ -3,11 +3,11 @@
 Source code and datasets for [Explicitly disentangling image content from translation and rotation with spatial-VAE](https://arxiv.org/abs/1909.11663) to appear at NeurIPS 2019.
 
 
-Learned hinge motion of 5HDB
+Learned hinge motion of 5HDB <br />
 ![5HDB_gif](gifs/5HDB_spatial.gif)
 
-Learned arm motion of CODH/ACS
-![codhacs_gif](figs/codhacs_spatial.gif)
+Learned arm motion of CODH/ACS <br />
+![codhacs_gif](gifs/codhacs_spatial.gif)
 
 
 ## Bibtex
@@ -54,15 +54,15 @@ For example, to train a spatial-VAE model on the CODH/ACS dataset
 python train_particles.py data/codhacs/processed_train.npy data/codhacs/processed_test.npy --num-epochs=1000 --augment-rotation
 ```
 
-Some script options include:
---z-dim: dimension of the unstructured latent variable (default: 2)
---p-hidden-dim and --p-num-layers: the number of layers and number of units per layer in the spatial generator network
---q-hidden-dim and --q-num-layers: the number of layers and number of units per layer in the approximate inference network
---dx-prior, --theta-prior: standard deviation (in fraction of image size) of the translation prior and standard deviation of the rotation prior
---no-rotate, --no-translate: flags to disable rotation and translation inference
---normalize: normalize the images before training (subtract mean, divide by standard deviation)
---fit-noise: also output the standard deviation of each pixel from the spatial generator network, sometimes called a colored noise model
---save-prefix: save model parameters every few epochs to this path prefix
-
+Some script options include:  
+--z-dim: dimension of the unstructured latent variable (default: 2)  
+--p-hidden-dim and --p-num-layers: the number of layers and number of units per layer in the spatial generator network  
+--q-hidden-dim and --q-num-layers: the number of layers and number of units per layer in the approximate inference network  
+--dx-prior, --theta-prior: standard deviation (in fraction of image size) of the translation prior and standard deviation of the rotation prior  
+--no-rotate, --no-translate: flags to disable rotation and translation inference  
+--normalize: normalize the images before training (subtract mean, divide by standard deviation)  
+--fit-noise: also output the standard deviation of each pixel from the spatial generator network, sometimes called a colored noise model  
+--save-prefix: save model parameters every few epochs to this path prefix  
+    
 See --help for complete arguments list.
 
