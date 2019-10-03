@@ -64,7 +64,7 @@ Some script options include:
 --dx-prior, --theta-prior: standard deviation (in fraction of image size) of the translation prior and standard deviation of the rotation prior  
 --no-rotate, --no-translate: flags to disable rotation and translation inference  
 --normalize: normalize the images before training (subtract mean, divide by standard deviation)  
---ctf-train, --ctf-test: path to tables containing CTF parameters for the train and test images, used to perform CTF correction if provided
+--ctf-train, --ctf-test: path to tables containing CTF parameters for the train and test images, used to perform CTF correction if provided  
 --fit-noise: also output the standard deviation of each pixel from the spatial generator network, sometimes called a colored noise model  
 --save-prefix: save model parameters every few epochs to this path prefix  
     
