@@ -16,8 +16,9 @@ import torchvision
 import spatial_vae.models as models
 import spatial_vae.mrc as mrc
 import spatial_vae.image as image_utils
+import spatial_vae.ctf as C
 
-def eval_minibatch(x, y, mask, p_net, q_net, rotate=True, translate=True, dx_scale=0.1, theta_prior=np.pi
+def eval_minibatch(x, y, mask, ctf, p_net, q_net, rotate=True, translate=True, dx_scale=0.1, theta_prior=np.pi
                   , augment_rotation=False, z_scale=1, use_cuda=False):
     b = y.size(0)
     x = x.expand(b, x.size(0), x.size(1))
@@ -48,9 +49,6 @@ def eval_minibatch(x, y, mask, p_net, q_net, rotate=True, translate=True, dx_sca
     z_mu,z_logstd = q_net(y_rot)
     z_std = torch.exp(z_logstd)
     z_dim = z_mu.size(1)
-
-    if mask is not None:
-        y = y[:,mask]
 
     # draw samples from variational posterior to calculate
     # E[p(x|z)]
@@ -101,13 +99,42 @@ def eval_minibatch(x, y, mask, p_net, q_net, rotate=True, translate=True, dx_sca
 
     # reconstruct
     y_params = p_net(x.contiguous(), z).view(b, -1)
+
+    y_mu = y_params
+    y_var = None
+
     if y_params.size(1) > y.size(1):
         y_mu = y_params[:,:y.size(1)]
-        y_logstd = y_params[:,y.size(1):]
-        y_std = torch.exp(y_logstd)
-        log_p_x_g_z = -0.5*torch.sum((y_mu - y)**2/y_std**2 + 2*y_logstd, 1).mean()
+        y_logvar = y_params[:,y.size(1):]
+        y_var = torch.exp(y_logvar)
+
+    if ctf is not None: # apply the CTF filter
+        pad = ctf.size(2)//2
+        y_mu = y_mu.view(1, -1, n, n)
+        #print(ctf.size(), y_mu.size(), file=sys.stderr)
+
+        y_mu = F.conv2d(y_mu, ctf, padding=pad, groups=ctf.size(0))
+        #print(y_mu.size(), file=sys.stderr)
+        y_mu = y_mu.view(-1, n*n)
+
+        if y_var is not None:
+            y_var = y_var.view(-1, 1, n, n)
+            y_var = F.conv2d(y_var, ctf, padding=pad)
+            y_var = y_var.view(-1, n*n)
+
+    y = y.view(-1, n*n)
+    if mask is not None:
+        y = y[:,mask]
+        y_mu = y_mu[:,mask]
+        if y_var is not None:
+            y_var = y_var[:,mask]
+            y_logvar = y_logvar[:,mask]
+
+    #print(y.size(), y_mu.size(), file=sys.stderr)
+
+    if y_var is not None:
+        log_p_x_g_z = -0.5*torch.sum((y_mu - y)**2/y_var + y_logvar, 1).mean()
     else:
-        y_mu = y_params
         log_p_x_g_z = -0.5*torch.sum((y_mu - y)**2, 1).mean()
 
     # unit normal prior over z and translation
@@ -118,6 +145,7 @@ def eval_minibatch(x, y, mask, p_net, q_net, rotate=True, translate=True, dx_sca
     elbo = log_p_x_g_z - kl_div
 
     return elbo, log_p_x_g_z, kl_div
+
 
 def train_epoch(iterator, x_coord, mask, p_net, q_net, optim, rotate=True, translate=True
                , dx_scale=0.1, theta_prior=np.pi, augment_rotation=False, z_scale=1
@@ -130,12 +158,18 @@ def train_epoch(iterator, x_coord, mask, p_net, q_net, optim, rotate=True, trans
     kl_loss_accum = 0
     elbo_accum = 0
 
-    for y, in iterator:
+    for mb in iterator:
+        if len(mb) > 1:
+            y,ctf = mb
+        else:
+            y = mb[0]
+            ctf = None
+
         b = y.size(0)
         x = Variable(x_coord)
         y = Variable(y)
 
-        elbo, log_p_x_g_z, kl_div = eval_minibatch(x, y, mask, p_net, q_net, rotate=rotate, translate=translate
+        elbo, log_p_x_g_z, kl_div = eval_minibatch(x, y, mask, ctf, p_net, q_net, rotate=rotate, translate=translate
                                                   , dx_scale=dx_scale, theta_prior=theta_prior
                                                   , augment_rotation=augment_rotation, z_scale=z_scale
                                                   , use_cuda=use_cuda)
@@ -178,12 +212,18 @@ def eval_model(iterator, x_coord, mask, p_net, q_net, rotate=True, translate=Tru
     kl_loss_accum = 0
     elbo_accum = 0
 
-    for y, in iterator:
+    for mb in iterator:
+        if len(mb) > 1:
+            y,ctf = mb
+        else:
+            y = mb[0]
+            ctf = None
+
         b = y.size(0)
         x = Variable(x_coord)
         y = Variable(y)
 
-        elbo, log_p_x_g_z, kl_div = eval_minibatch(x, y, mask, p_net, q_net, rotate=rotate, translate=translate
+        elbo, log_p_x_g_z, kl_div = eval_minibatch(x, y, mask, ctf, p_net, q_net, rotate=rotate, translate=translate
                                                   , dx_scale=dx_scale, theta_prior=theta_prior
                                                   , z_scale=z_scale
                                                   , use_cuda=use_cuda)
@@ -215,6 +255,20 @@ def load_images(path):
     return images
 
 
+class Dataset:
+    def __init__(self, y, ctf=None):
+        self.y = y
+        self.ctf = ctf
+
+    def __len__(self):
+        return len(self.y)
+
+    def __getitem__(self, i):
+        if self.ctf is None:
+            return self.y[i], None
+        return self.y[i], self.ctf[i]
+
+
 def main():
     import argparse
 
@@ -222,6 +276,10 @@ def main():
 
     parser.add_argument('train_path', help='path to training data')
     parser.add_argument('test_path', help='path to testing data')
+
+    parser.add_argument('--ctf-train', help='path to CTF parameters for training images')
+    parser.add_argument('--ctf-test', help='path to CTF parameters for testing images')
+    parser.add_argument('--scale', default=1, type=float, help='used to scale the ang/pix if images were binned (default: 1)')
 
     parser.add_argument('-z', '--z-dim', type=int, default=2, help='latent variable dimension (default: 2)')
     parser.add_argument('--p-hidden-dim', type=int, default=500, help='dimension of hidden layers for generator (default: 500)')
@@ -232,6 +290,7 @@ def main():
     parser.add_argument('--softplus', action='store_true', help='apply softplus activation to mean pixel output by generator. clamping the mean to be non-negative can reduce learning background noise')
     parser.add_argument('--resid', action='store_true', help='use residual connections in networks')
     parser.add_argument('--expand-coords', action='store_true', help='also use the second power of fthe spatial coordinates as features in the spatial generator network')
+    parser.add_argument('--bilinear', action='store_true', help='use bilinear layer between coordinate and latent in spatial generator network')
 
     parser.add_argument('--fit-noise', action='store_true', help='also learn the standard deviation of the noise in the generative model')
     parser.add_argument('--vanilla', action='store_true', help='use the standard MLP generator architecture, decoding each pixel with an independent function. disables structured rotation and translation inference')
@@ -248,6 +307,7 @@ def main():
     parser.add_argument('--z-delay', type=int, default=0, help='delay using unstructured latent variables for this many training epochs (default: 0)')
 
     parser.add_argument('--normalize', action='store_true', help='normalize the images before training')
+    parser.add_argument('-c', '--crop', type=int, default=-1, help='crop particles down to this size (default: -1 = unused)')
 
     parser.add_argument('--save-prefix', help='path prefix to save models (optional)')
     parser.add_argument('--save-interval', default=10, type=int, help='save frequency in epochs (default: 10)')
@@ -267,6 +327,12 @@ def main():
     images_test = load_images(args.test_path)
     print('# train:', images_train.shape, ', test:', images_test.shape, file=sys.stderr)
 
+    crop = args.crop
+    if crop > 0:
+        images_train = image_utils.crop(images_train, crop)
+        images_test = image_utils.crop(images_test, crop)
+        print('# cropped to:', crop, file=sys.stderr)
+
     n,m = images_train.shape[1:]
 
     # normalize the images using edges to estimate background
@@ -283,6 +349,28 @@ def main():
         #radius = min(n,m)/2
         #images_train = image_utils.normalize(images_train, radius)
         #images_test = image_utils.normalize(images_test, radius)
+
+    scale = args.scale
+    ctf_train = None
+    if n % 2 == 0:
+        n = n - 1
+    if m % 2 == 0:
+        m = m - 1
+    if args.ctf_train is not None:
+        # load CTF params
+        print('# loading CTF filters:', args.ctf_train, file=sys.stderr)
+        ctf_params = C.parse_ctf(args.ctf_train)
+        ctf_train = C.ctf_filter(ctf_params, n, m, scale=scale)
+        ctf_train = torch.from_numpy(ctf_train).float().unsqueeze(1)
+
+    ctf_test = None
+    if args.ctf_test is not None:
+        print('# loading CTF filters:', args.ctf_test, file=sys.stderr)
+        ctf_params = C.parse_ctf(args.ctf_test)
+        ctf_test = C.ctf_filter(ctf_params, n, m, scale=scale)
+        ctf_test = torch.from_numpy(ctf_test).float().unsqueeze(1)
+
+    n,m = images_train.shape[1:]
 
     ## x coordinate array
     xgrid = np.linspace(-1, 1, m)
@@ -305,8 +393,7 @@ def main():
         dist = np.sqrt((center[0] - y_grid)**2 + (center[1] - x_grid)**2)
         mask = torch.from_numpy(dist) < radius
         mask = mask.view(-1)
-        x_coord = x_coord[mask]
-        print('# masking to size:', len(x_coord), file=sys.stderr)
+        print('# masking to size:', mask.sum().item(), file=sys.stderr)
 
     ## set the device
     d = args.device
@@ -320,15 +407,23 @@ def main():
     if use_cuda and not no_preload:
         y_train = y_train.cuda()
         y_test = y_test.cuda()
+        if ctf_train is not None:
+            ctf_train = ctf_train.cuda()
+        if ctf_test is not None:
+            ctf_test = ctf_test.cuda()
 
     if use_cuda:
         x_coord = x_coord.cuda()
         if mask is not None:
             mask = mask.cuda()
-        
 
     data_train = torch.utils.data.TensorDataset(y_train)
+    if ctf_train is not None:
+        data_train = torch.utils.data.TensorDataset(y_train, ctf_train)
+
     data_test = torch.utils.data.TensorDataset(y_test)
+    if ctf_test is not None:
+        data_test = torch.utils.data.TensorDataset(y_test, ctf_test)
 
     z_dim = args.z_dim
     print('# training with z-dim:', z_dim, file=sys.stderr)
@@ -341,6 +436,7 @@ def main():
         activation = nn.LeakyReLU
     resid = args.resid
     expand_coords = args.expand_coords
+    bilinear = args.bilinear
 
     fit_noise = args.fit_noise
     n_out = 1
@@ -367,7 +463,7 @@ def main():
             inf_dim += 2
         p_net = models.SpatialGenerator(z_dim, hidden_dim, n_out=n_out, num_layers=num_layers
                                        , activation=activation, softplus=softplus, resid=resid
-                                       , expand_coords=expand_coords)
+                                       , expand_coords=expand_coords, bilinear=bilinear)
 
     num_layers = args.q_num_layers
     hidden_dim = args.q_hidden_dim

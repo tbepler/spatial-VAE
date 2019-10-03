@@ -55,7 +55,7 @@ class InferenceNetwork(nn.Module):
 
 class SpatialGenerator(nn.Module):
     def __init__(self, latent_dim, hidden_dim, n_out=1, num_layers=1, activation=nn.Tanh
-                , softplus=False, resid=False, expand_coords=False):
+                , softplus=False, resid=False, expand_coords=False, bilinear=False):
         super(SpatialGenerator, self).__init__()
 
         self.softplus = softplus
@@ -68,7 +68,10 @@ class SpatialGenerator(nn.Module):
         self.coord_linear = nn.Linear(in_dim, hidden_dim)
         self.latent_dim = latent_dim
         if latent_dim > 0:
-            self.latent_linear = nn.Linear(latent_dim, hidden_dim)
+            self.latent_linear = nn.Linear(latent_dim, hidden_dim, bias=False)
+
+        if latent_dim > 0 and bilinear: # include bilinear layer on latent and coordinates
+            self.bilinear = nn.Bilinear(in_dim, latent_dim, hidden_dim, bias=False)
 
         layers = [activation()]
         for _ in range(1,num_layers):
@@ -105,7 +108,16 @@ class SpatialGenerator(nn.Module):
             h_z = self.latent_linear(z)
             h_z = h_z.unsqueeze(1)
 
-        h = h_x + h_z # (batch, num_coords, hidden_dim)
+        h_bi = 0
+        if hasattr(self, 'bilinear'):
+            if len(z.size()) < 2:
+                z = z.unsqueeze(0)
+            z = z.unsqueeze(1) # broadcast over coordinates
+            x = x.view(b, n, -1)
+            z = z.expand(b, x.size(1), z.size(2)).contiguous()
+            h_bi = self.bilinear(x, z)
+
+        h = h_x + h_z + h_bi # (batch, num_coords, hidden_dim)
         h = h.view(b*n, -1)
 
         y = self.layers(h) # (batch*num_coords, nout)
